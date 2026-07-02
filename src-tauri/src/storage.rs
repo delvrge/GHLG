@@ -385,19 +385,40 @@ pub fn uninstall_git_hook(repo: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Cap on diff text handed to the local model — keeps a small-context
+/// model (e.g. a 4k-context Qwen2.5-3B) from being flooded by a huge diff.
+const MAX_DIFF_CHARS: usize = 6000;
+
+fn truncate_diff(diff: String) -> String {
+    if diff.len() <= MAX_DIFF_CHARS {
+        diff
+    } else {
+        format!("{}\n… (diff truncated)", &diff[..MAX_DIFF_CHARS])
+    }
+}
+
+/// The actual code change is the point — Ghostlog documents what happened
+/// and why, not just whatever one-liner the developer typed while rushing
+/// back to work. This is the diff of everything not yet committed
+/// (staged + unstaged) in the watched repo, used as reasoning material for
+/// the manual "Log this now" trigger.
+pub fn working_tree_diff(repo: &Path) -> String {
+    truncate_diff(run_git(repo, &["diff", "HEAD"]).unwrap_or_default())
+}
+
 /// Entry point for `ghlg --ghlg-git-commit <repo>`, run by the post-commit
 /// hook as a short-lived subprocess — there is no webview here, so the AI
 /// call happens directly through ai.rs rather than ai-stub.ts. Reads the
-/// latest commit subject + diff via `git log`/`git show` and summarizes it
-/// with the local model configured in Settings > AI provider (falls back
-/// to a mock draft if none is configured or the call fails).
+/// latest commit's full diff and summarizes it with the local model
+/// configured in Settings > AI provider (falls back to a mock draft if
+/// none is configured or the call fails).
 pub async fn capture_from_git_commit(repo: &Path) -> Result<(), String> {
     let project = project_name(repo)?;
     let subject = run_git(repo, &["log", "-1", "--pretty=%s"])?;
-    let stat = run_git(repo, &["show", "--stat", "--pretty=", "HEAD"]).unwrap_or_default();
+    let diff = truncate_diff(run_git(repo, &["show", "--pretty=", "HEAD"]).unwrap_or_default());
     let note = if subject.is_empty() { "git commit".to_string() } else { subject };
 
-    let draft = crate::ai::summarize_capture(&note, Some(&stat)).await;
+    let draft = crate::ai::summarize_capture(&note, Some(&diff)).await;
     let (date, session_id) = create_session(&project)?;
     write_entry(&project, &date, &session_id, &draft.tag, &draft.title, &draft.summary)?;
     Ok(())

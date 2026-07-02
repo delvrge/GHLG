@@ -112,7 +112,7 @@ export default function Home({
             value={note}
             onChange={(e) => setNote(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && logNow()}
-            placeholder='e.g. "fixed the webhook bug"'
+            placeholder="optional hint for the model (not required — the diff does the work)"
             className="flex-1 bg-ink border border-edge rounded-md px-3 py-2 text-sm font-mono placeholder:text-fg-faint focus:outline-none focus:border-accent"
           />
           <button
@@ -123,7 +123,8 @@ export default function Home({
           </button>
         </div>
         <p className="text-xs text-fg-faint">
-          Captures your note with recent git context into the current session.
+          Reads your uncommitted changes and reconstructs the problem, the fix, and the reasoning — your note is
+          just a nudge, not the documentation.
         </p>
       </section>
 

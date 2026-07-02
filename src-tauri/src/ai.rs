@@ -32,8 +32,9 @@ fn mock_draft(seed: &str) -> EntryDraft {
     EntryDraft {
         tag: "update".into(),
         title: seed.chars().take(60).collect(),
-        summary: "Mock summary — set an endpoint in Settings > AI provider (a running \
-                   llama.cpp server) to replace this with a real local-model summary."
+        summary: "**Problem:** (mock)\n\n**Fix:** (mock)\n\n**Reasoning:** set an endpoint in \
+                   Settings > AI provider (a running llama.cpp server) to replace this with \
+                   a real reconstruction of what changed and why."
             .into(),
     }
 }
@@ -96,27 +97,45 @@ async fn call_llama_cpp(cfg: &AiConfig, system: &str, user: &str, json_mode: boo
         .ok_or_else(|| "local model server returned no choices".to_string())
 }
 
-/// Summarize a manual note or commit subject (plus optional git context)
-/// into a structured entry draft. Falls back to a mock draft on any error
-/// or when no endpoint is configured — capture always succeeds.
-pub async fn summarize_capture(note: &str, git_context: Option<&str>) -> EntryDraft {
+/// Reconstructs a documentation entry from a git diff (plus an optional
+/// short hint from the developer) into a structured entry draft.
+///
+/// The point of Ghostlog is NOT to store whatever one-liner the developer
+/// typed — that's just a nudge for the model, not the documentation. The
+/// diff is the real evidence: what files/lines actually changed. The model
+/// is asked to reconstruct what the problem was, what the fix/change was,
+/// and the likely reasoning behind it — the way a programmer would explain
+/// it to themselves later, or in a postmortem. Falls back to a mock draft
+/// on any error or when no endpoint is configured — capture always
+/// succeeds either way.
+pub async fn summarize_capture(hint: &str, diff: Option<&str>) -> EntryDraft {
     let cfg = crate::storage::load_ai_config();
     if cfg.endpoint.trim().is_empty() {
-        return mock_draft(note);
+        return mock_draft(hint);
     }
 
-    let system = "You are labeling a developer's dev-log entry. Reply with ONLY a JSON \
-                  object with exactly these keys: \"tag\" (one of \"bugfix\", \"update\", \
-                  \"feature\"), \"title\" (a short one-line title, under 60 characters), \
-                  and \"summary\" (one or two plain sentences). No other text.";
+    let system = "You are a documentation assistant for a solo developer. Given a code \
+                  diff (and sometimes a short note from the developer), reconstruct what \
+                  actually happened — do not just repeat the note verbatim, the diff is \
+                  the real evidence. Reply with ONLY a JSON object with exactly these keys:\n\
+                  \"tag\": one of \"bugfix\", \"update\", \"feature\".\n\
+                  \"title\": a short one-line title, under 60 characters.\n\
+                  \"summary\": a markdown string with these sections, each 1-3 sentences, \
+                  omitting a section only if it genuinely doesn't apply:\n\
+                  \"**Problem:** what was broken or missing, inferred from the diff.\n\
+                  \"**Fix:** what the diff actually changed to address it.\n\
+                  \"**Reasoning:** the likely thought process behind that specific fix.\n\
+                  \"**Suggestion:** (optional) one concrete follow-up idea, only if genuinely useful.\n\
+                  No text outside the JSON object.";
     let user = format!(
-        "Note from the developer: {note}\n{}",
-        git_context.map(|c| format!("Recent git context:\n{c}")).unwrap_or_default()
+        "Developer's note (a hint, not the full story): {}\n\n{}",
+        if hint.trim().is_empty() { "(none given)" } else { hint },
+        diff.map(|d| format!("Diff:\n```diff\n{d}\n```")).unwrap_or_else(|| "No diff available — the note is the only material.".to_string())
     );
 
     match call_llama_cpp(&cfg, system, &user, true).await {
-        Ok(raw) => parse_draft(&raw).unwrap_or_else(|| fallback_with_note(note, &raw)),
-        Err(e) => fallback_with_error(note, &e),
+        Ok(raw) => parse_draft(&raw).unwrap_or_else(|| fallback_with_note(hint, &raw)),
+        Err(e) => fallback_with_error(hint, &e),
     }
 }
 
@@ -167,9 +186,12 @@ pub async fn compile_document(entry_markdown: &[String]) -> String {
         );
     }
 
-    let system = "Write a short, plain-language postmortem in markdown from the dev-log \
-                  entries the user gives you. Use a '# Session postmortem' heading and a \
-                  few short sections. Do not invent details not present in the entries.";
+    let system = "Write a plain-language postmortem in markdown from the dev-log entries \
+                  the user gives you (each already has a problem/fix/reasoning breakdown). \
+                  Use a '# Session postmortem' heading, one subsection per entry, and a \
+                  short closing 'What I'd do differently' section only if the entries \
+                  actually suggest something. Do not invent details not present in the \
+                  entries below.";
 
     match call_llama_cpp(&cfg, system, &joined, false).await {
         Ok(text) => text,

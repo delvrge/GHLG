@@ -68,18 +68,22 @@ pub fn get_watched_folder(state: State<AppState>) -> Option<String> {
 }
 
 /// Manual "Log this now" trigger — writes a real entry file into the
-/// current session (creating one if needed). Title/tag/summary come from
-/// the local model configured in Settings > AI provider, via ai.rs; if
-/// none is configured (or the call fails), a clearly-labeled mock draft is
-/// used instead — capture always succeeds either way.
+/// current session (creating one if needed). The note is just a hint for
+/// the model, NOT the documentation itself: the real material is the
+/// working-tree git diff (staged + unstaged), which the model uses to
+/// reconstruct what actually changed, why, and how it was fixed. Title/
+/// tag/summary come from the local model configured in Settings > AI
+/// provider, via ai.rs; if none is configured (or the call fails), a
+/// clearly-labeled mock draft is used instead — capture always succeeds.
 #[tauri::command]
 pub async fn manual_capture(app: AppHandle, note: Option<String>) -> Result<storage::SessionEntry, String> {
     let state = app.state::<AppState>();
-    let project = {
+    let (project, repo) = {
         let watched = state.watched_path.lock().unwrap();
         let root = watched.as_ref().ok_or("No watched folder configured")?;
-        storage::project_name(root)?
+        (storage::project_name(root)?, root.clone())
     };
+    let diff = storage::working_tree_diff(&repo);
 
     // Reuse the active session or lazily create one (manual capture must
     // work even when not actively watching).
@@ -96,7 +100,8 @@ pub async fn manual_capture(app: AppHandle, note: Option<String>) -> Result<stor
     };
 
     let note_text = note.unwrap_or_else(|| "manual capture".to_string());
-    let draft = crate::ai::summarize_capture(&note_text, None).await;
+    let diff_context = if diff.trim().is_empty() { None } else { Some(diff.as_str()) };
+    let draft = crate::ai::summarize_capture(&note_text, diff_context).await;
     let entry =
         storage::write_entry(&project, &date, &session_id, &draft.tag, &draft.title, &draft.summary)?;
     watcher::record_event(&app, "manual", note_text);
