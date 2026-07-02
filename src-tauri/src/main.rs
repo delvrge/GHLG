@@ -17,6 +17,13 @@ fn main() {
             }
             return;
         }
+        if flag == "--ghlg-native-host" {
+            if let Err(e) = ghlg_lib::run_native_host_cli() {
+                eprintln!("GHLG native host failed: {e}");
+                std::process::exit(1);
+            }
+            return;
+        }
     }
 
     ghlg_lib::run()

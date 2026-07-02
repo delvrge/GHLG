@@ -185,11 +185,29 @@ pub fn set_git_hook_enabled(state: State<AppState>, enabled: bool) -> Result<(),
     }
 }
 
-/// Extension connection status. STUB shape until Native Messaging (step 8)
-/// exists — always reports disconnected for now.
+/// Extension connection status. Live handshake detection would need the
+/// short-lived native-host subprocess to report back to this long-running
+/// app, which isn't built — so this only reflects whether the host manifest
+/// is registered with the browser, not whether a session is active right now.
 #[tauri::command]
 pub fn get_extension_status() -> &'static str {
     "disconnected"
+}
+
+#[tauri::command]
+pub fn is_native_host_installed() -> bool {
+    storage::is_native_host_installed()
+}
+
+#[tauri::command]
+pub fn install_native_host() -> Result<(), String> {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    storage::install_native_host(&exe)
+}
+
+#[tauri::command]
+pub fn uninstall_native_host() -> Result<(), String> {
+    storage::uninstall_native_host()
 }
 
 // ---- Settings: AI provider ----

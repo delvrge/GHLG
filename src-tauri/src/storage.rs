@@ -83,6 +83,17 @@ pub fn save_config(watched: &Path) -> Result<(), String> {
     write_config(&cfg)
 }
 
+/// Reads the persisted watched folder directly from config.json — used by
+/// the native-host CLI subprocess (see below), which has no AppState/Tauri
+/// runtime to read it from.
+pub fn load_watched_folder() -> Option<PathBuf> {
+    read_config()
+        .get("watchedFolder")
+        .and_then(|v| v.as_str())
+        .map(PathBuf::from)
+        .filter(|p| p.is_dir())
+}
+
 #[derive(Clone, Serialize, serde::Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct AiConfig {
@@ -463,6 +474,86 @@ pub async fn capture_from_git_commit(repo: &Path) -> Result<(), String> {
     let draft = crate::ai::summarize_capture(&note, diff_context).await;
     let (date, session_id) = create_session(&project)?;
     write_entry(&project, &date, &session_id, &draft.tag, &draft.title, &draft.summary)?;
+    Ok(())
+}
+
+/// Entry point for `ghlg --ghlg-native-host`, launched by Chrome itself as a
+/// short-lived stdio subprocess per `chrome.runtime.connectNative` call (see
+/// main.rs for the protocol loop). No repo argument is available — Chrome
+/// only passes its own extension origin — so the watched folder comes from
+/// the same config.json the review window itself uses.
+pub async fn capture_from_native_host(note: Option<String>) -> Result<(), String> {
+    let repo = load_watched_folder().ok_or("No watched folder configured")?;
+    let project = project_name(&repo)?;
+    let diff = working_tree_diff(&repo);
+    let note_text = note.unwrap_or_else(|| "browser capture".to_string());
+    let diff_context = if diff.trim().is_empty() { None } else { Some(diff.as_str()) };
+
+    let draft = crate::ai::summarize_capture(&note_text, diff_context).await;
+    let (date, session_id) = create_session(&project)?;
+    write_entry(&project, &date, &session_id, &draft.tag, &draft.title, &draft.summary)?;
+    Ok(())
+}
+
+// ---- Native Messaging host registration ----
+// Chrome (and Chromium-based browsers) locate a native messaging host by a
+// small JSON manifest file in a fixed, browser-specific directory — NOT by
+// anything the extension itself can specify at runtime. Registering here
+// just writes that manifest; it does not open any port or start any process
+// (Chrome launches the host on demand, once per connectNative() call).
+
+const NATIVE_HOST_NAME: &str = "com.ghostlog.native";
+// Fixed via extension/manifest.json's "key" field, so the extension's ID
+// never changes across reloads — otherwise every unpacked reload would
+// require re-registering the host with a new allowed_origins entry.
+const EXTENSION_ID: &str = "gmlnlhknokpiignefikdlpilogkfcldn";
+
+#[cfg(target_os = "macos")]
+fn native_host_manifest_path() -> Result<PathBuf, String> {
+    let home = dirs::home_dir().ok_or("Cannot resolve home directory")?;
+    Ok(home
+        .join("Library/Application Support/Google/Chrome/NativeMessagingHosts")
+        .join(format!("{NATIVE_HOST_NAME}.json")))
+}
+
+#[cfg(target_os = "linux")]
+fn native_host_manifest_path() -> Result<PathBuf, String> {
+    let home = dirs::home_dir().ok_or("Cannot resolve home directory")?;
+    Ok(home
+        .join(".config/google-chrome/NativeMessagingHosts")
+        .join(format!("{NATIVE_HOST_NAME}.json")))
+}
+
+#[cfg(target_os = "windows")]
+fn native_host_manifest_path() -> Result<PathBuf, String> {
+    // Windows resolves native messaging hosts via a registry key rather than
+    // a fixed directory; out of scope until Windows packaging is tackled.
+    Err("Native Messaging host registration isn't implemented for Windows yet".to_string())
+}
+
+pub fn is_native_host_installed() -> bool {
+    native_host_manifest_path().is_ok_and(|p| p.is_file())
+}
+
+pub fn install_native_host(exe_path: &Path) -> Result<(), String> {
+    let path = native_host_manifest_path()?;
+    let dir = path.parent().ok_or("Invalid native host manifest path")?;
+    fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    let manifest = serde_json::json!({
+        "name": NATIVE_HOST_NAME,
+        "description": "Ghostlog native messaging host",
+        "path": exe_path.display().to_string(),
+        "type": "stdio",
+        "allowed_origins": [format!("chrome-extension://{EXTENSION_ID}/")]
+    });
+    fs::write(&path, serde_json::to_string_pretty(&manifest).unwrap()).map_err(|e| e.to_string())
+}
+
+pub fn uninstall_native_host() -> Result<(), String> {
+    let path = native_host_manifest_path()?;
+    if path.is_file() {
+        fs::remove_file(&path).map_err(|e| e.to_string())?;
+    }
     Ok(())
 }
 

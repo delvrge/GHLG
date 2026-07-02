@@ -2,6 +2,7 @@
   "manifest_version": 3,
   "name": "Ghostlog",
   "version": "0.1.0",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA5DmfNV42YUDdQcR3qa3+PDV12A7OCVB6ooG5LT26bhVvsIPKzB9tCwoUWFBCML2rv82Q/FR4G2a0t9JMEgZSbMi8i5f184SxR+yunXPpvyFDpamGC/kK1hAW7o7AIQZRyzzf5QPEzLFUe5sTK9kE7879ZIsOhI15vGPFaxAo/wu9afCect9SZ777o02Zkwn1zOMza4lWAN0faQ9HJK56Xs5z+hSLFDm8TlzEn82ceGOwxsFiA19ax2tTHTwx/9Z6xl2VcYSwgj2Pkijxj4kLNskkbPcPHsPnsuRyDHHDoBo0g2PbjTAj8C1gSpNA159f00ydb7Azd6NSSMNcScIDDQIDAQAB",
   "description": "Ghostlog localhost capture — talks to the Ghostlog native app via Native Messaging only. No network access, scoped strictly to localhost.",
   "permissions": ["nativeMessaging", "activeTab"],
   "host_permissions": ["http://localhost/*", "http://127.0.0.1/*"],

@@ -52,6 +52,7 @@ export default function Settings({
   const [gitHook, setGitHook] = useState(false);
   const [launchAtLogin, setLaunchAtLogin] = useState(false);
   const [extensionStatus, setExtensionStatus] = useState<"connected" | "disconnected">("disconnected");
+  const [nativeHostInstalled, setNativeHostInstalled] = useState(false);
   const [version, setVersion] = useState("");
   const [error, setError] = useState<string | null>(null);
 
@@ -65,6 +66,7 @@ export default function Settings({
     invoke<boolean>("is_git_hook_enabled").then(setGitHook).catch(() => {});
     autostartEnabled().then(setLaunchAtLogin).catch(() => {});
     invoke<string>("get_extension_status").then((s) => setExtensionStatus(s as "connected" | "disconnected"));
+    invoke<boolean>("is_native_host_installed").then(setNativeHostInstalled).catch(() => {});
     getVersion().then(setVersion);
     invoke<{ endpoint: string; model: string }>("get_ai_config").then((cfg) => {
       setAiEndpoint(cfg.endpoint);
@@ -102,6 +104,17 @@ export default function Settings({
     try {
       await invoke("set_git_hook_enabled", { enabled: next });
       setGitHook(next);
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
+  async function toggleNativeHost() {
+    setError(null);
+    try {
+      if (nativeHostInstalled) await invoke("uninstall_native_host");
+      else await invoke("install_native_host");
+      setNativeHostInstalled(!nativeHostInstalled);
     } catch (e) {
       setError(String(e));
     }
@@ -169,11 +182,23 @@ export default function Settings({
 
       <section>
         <h2 className="text-xs text-fg-faint uppercase tracking-wide mb-1">Browser extension</h2>
-        <div className="bg-panel border border-edge rounded-lg px-4 py-3 flex items-center gap-2">
-          <span
-            className={`h-2 w-2 rounded-full ${extensionStatus === "connected" ? "bg-accent" : "bg-fg-faint"}`}
-          />
-          <span className="text-sm text-fg-muted capitalize">{extensionStatus}</span>
+        <div className="bg-panel border border-edge rounded-lg px-4 divide-y divide-edge">
+          <Row title="Native messaging host" description="Lets the Ghostlog extension trigger captures — no network ports involved">
+            <button
+              onClick={toggleNativeHost}
+              className="shrink-0 text-xs text-fg-muted hover:text-fg border border-edge-strong hover:border-fg-muted px-3 py-1.5 rounded-md transition-colors"
+            >
+              {nativeHostInstalled ? "Uninstall" : "Install"}
+            </button>
+          </Row>
+          <Row title="Connection">
+            <div className="flex items-center gap-2">
+              <span
+                className={`h-2 w-2 rounded-full ${extensionStatus === "connected" ? "bg-accent" : "bg-fg-faint"}`}
+              />
+              <span className="text-sm text-fg-muted capitalize">{extensionStatus}</span>
+            </div>
+          </Row>
         </div>
       </section>
 

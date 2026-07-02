@@ -10,6 +10,7 @@ mod tray;
 mod watcher;
 
 use state::AppState;
+use std::io::{Read, Write};
 use std::path::Path;
 
 /// Entry point for the `--ghlg-git-commit <repo>` CLI mode (see main.rs).
@@ -22,6 +23,49 @@ pub fn capture_from_git_commit_cli(repo: &Path) -> Result<(), String> {
         .build()
         .map_err(|e| e.to_string())?
         .block_on(storage::capture_from_git_commit(&canonical))
+}
+
+/// Entry point for `ghlg --ghlg-native-host` (see main.rs). Chrome launches
+/// this as a short-lived subprocess per `connectNative()` call and speaks
+/// its Native Messaging stdio protocol: each message is a 4-byte
+/// little-endian length prefix followed by that many bytes of UTF-8 JSON,
+/// in both directions. Reads until the extension disconnects (stdin EOF),
+/// which is the normal, expected way this process ends.
+pub fn run_native_host_cli() -> Result<(), String> {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let stdin = std::io::stdin();
+    let mut stdin = stdin.lock();
+    let stdout = std::io::stdout();
+    let mut stdout = stdout.lock();
+
+    loop {
+        let mut len_buf = [0u8; 4];
+        if stdin.read_exact(&mut len_buf).is_err() {
+            return Ok(()); // extension disconnected — normal shutdown
+        }
+        let len = u32::from_le_bytes(len_buf) as usize;
+        let mut msg_buf = vec![0u8; len];
+        stdin.read_exact(&mut msg_buf).map_err(|e| e.to_string())?;
+
+        let msg: serde_json::Value = serde_json::from_slice(&msg_buf).map_err(|e| e.to_string())?;
+        let note = msg.get("note").and_then(|v| v.as_str()).map(str::to_string);
+
+        let result = rt.block_on(storage::capture_from_native_host(note));
+        let response = match result {
+            Ok(()) => serde_json::json!({ "ok": true }),
+            Err(e) => serde_json::json!({ "ok": false, "error": e }),
+        };
+        let response_bytes = serde_json::to_vec(&response).map_err(|e| e.to_string())?;
+        stdout
+            .write_all(&(response_bytes.len() as u32).to_le_bytes())
+            .map_err(|e| e.to_string())?;
+        stdout.write_all(&response_bytes).map_err(|e| e.to_string())?;
+        stdout.flush().map_err(|e| e.to_string())?;
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -63,6 +107,9 @@ pub fn run() {
             commands::is_git_hook_enabled,
             commands::set_git_hook_enabled,
             commands::get_extension_status,
+            commands::is_native_host_installed,
+            commands::install_native_host,
+            commands::uninstall_native_host,
             commands::get_ai_config,
             commands::set_ai_config,
             commands::ai_compile,
