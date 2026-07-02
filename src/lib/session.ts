@@ -1,0 +1,43 @@
+/**
+ * session.ts — session folder read/write and date-range browsing.
+ *
+ * Data lives under the OS app-data dir (never inside the watched repo):
+ *   <app-data>/GHLG/<project-name>/<YYYY-MM-DD>/session-NN/
+ * All filesystem access goes through Tauri commands (Rust side) — the
+ * frontend never touches paths directly. Implemented in delivery step 3.
+ */
+import { invoke } from "@tauri-apps/api/core";
+
+export interface SessionEntry {
+  id: string; // e.g. "entry-001-bugfix"
+  timestamp: string; // ISO 8601
+  tag: "bugfix" | "update" | "feature";
+  title: string;
+  summary: string;
+  screenshotPath?: string;
+  markdownPath: string;
+}
+
+export interface SessionMeta {
+  date: string; // YYYY-MM-DD
+  sessionId: string; // e.g. "session-01"
+  entryCount: number;
+}
+
+/** List all dates that have at least one session (full archive, any past date). */
+export async function listDates(): Promise<string[]> {
+  return invoke("list_session_dates");
+}
+
+/** List sessions for a given date. */
+export async function listSessions(date: string): Promise<SessionMeta[]> {
+  return invoke("list_sessions", { date });
+}
+
+/** Read all entries in a session. */
+export async function readSession(
+  date: string,
+  sessionId: string,
+): Promise<SessionEntry[]> {
+  return invoke("read_session", { date, sessionId });
+}

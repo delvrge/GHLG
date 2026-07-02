@@ -1,0 +1,32 @@
+/*
+ * GHLG design tokens — Tailwind v4 theme.
+ * Palette is strictly red / white / gray / near-black.
+ * Red is the ONLY accent: primary actions, active/watching states, important tags.
+ * No greens/blues/yellows anywhere — neutral-positive states use white/gray.
+ * Keep in sync with src/styles/theme.ts (JS-side tokens).
+ */
+@import "tailwindcss";
+
+@theme {
+  /* Backgrounds */
+  --color-ink: #0d0d0d;          /* app background (dark mode default) */
+  --color-panel: #1a1a1a;        /* cards / panels */
+  --color-panel-raised: #242424; /* hovered / raised panels */
+
+  /* Accent — the one red, reserved */
+  --color-accent: #e63946;
+  --color-accent-dim: #a32833;   /* pressed / muted red */
+
+  /* Text */
+  --color-fg: #f5f5f4;           /* primary text, off-white */
+  --color-fg-muted: #8a8a8a;     /* secondary / muted */
+  --color-fg-faint: #5c5c5c;     /* disabled / hints */
+
+  /* Borders */
+  --color-edge: #2e2e2e;         /* subtle dividers, not pure black */
+  --color-edge-strong: #3d3d3d;
+
+  /* Typography */
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
