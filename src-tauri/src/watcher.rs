@@ -82,6 +82,11 @@ pub fn start(app: &AppHandle) -> Result<(), String> {
     holder.watcher = Some(watcher);
     drop(holder);
 
+    // Each watch period gets its own session folder.
+    let project = crate::storage::project_name(&root)?;
+    let session = crate::storage::create_session(&project)?;
+    *state.current_session.lock().unwrap() = Some(session);
+
     crate::tray::sync(app);
     Ok(())
 }

@@ -4,6 +4,7 @@
 
 mod commands;
 mod state;
+mod storage;
 mod tray;
 mod watcher;
 
@@ -33,6 +34,11 @@ pub fn run() {
             commands::set_watched_folder,
             commands::get_watched_folder,
             commands::manual_capture,
+            commands::list_session_dates,
+            commands::list_sessions,
+            commands::read_session,
+            commands::update_entry,
+            commands::delete_entry,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

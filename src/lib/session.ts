@@ -4,7 +4,7 @@
  * Data lives under the OS app-data dir (never inside the watched repo):
  *   <app-data>/GHLG/<project-name>/<YYYY-MM-DD>/session-NN/
  * All filesystem access goes through Tauri commands (Rust side) — the
- * frontend never touches paths directly. Implemented in delivery step 3.
+ * frontend never touches paths directly.
  */
 import { invoke } from "@tauri-apps/api/core";
 
@@ -40,4 +40,23 @@ export async function readSession(
   sessionId: string,
 ): Promise<SessionEntry[]> {
   return invoke("read_session", { date, sessionId });
+}
+
+/** Edit an entry's tag/title/summary in place. */
+export async function updateEntry(
+  date: string,
+  sessionId: string,
+  entryId: string,
+  fields: { tag: SessionEntry["tag"]; title: string; summary: string },
+): Promise<void> {
+  await invoke("update_entry", { date, sessionId, entryId, ...fields });
+}
+
+/** Delete an entry (and its screenshot, if any). */
+export async function deleteEntry(
+  date: string,
+  sessionId: string,
+  entryId: string,
+): Promise<void> {
+  await invoke("delete_entry", { date, sessionId, entryId });
 }

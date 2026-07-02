@@ -1,0 +1,294 @@
+//! Session storage — plain filesystem, no database.
+//!
+//! Layout (never inside the watched repo, so it can't be committed):
+//!   <os-app-data>/GHLG/<project-name>/<YYYY-MM-DD>/session-NN/
+//!     entry-001-bugfix.md
+//!     screenshot-001.png
+//!
+//! Entries are markdown with a small front-matter block. Everything here is
+//! pure local filesystem access; the review window reaches it only through
+//! Tauri commands.
+
+use serde::Serialize;
+use std::fs;
+use std::path::{Path, PathBuf};
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionEntry {
+    pub id: String,
+    pub timestamp: String,
+    pub tag: String, // "bugfix" | "update" | "feature"
+    pub title: String,
+    pub summary: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub screenshot_path: Option<String>,
+    pub markdown_path: String,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionMeta {
+    pub date: String,
+    pub session_id: String,
+    pub entry_count: usize,
+}
+
+/// OS-standard app-data root:
+/// macOS ~/Library/Application Support/GHLG, Windows %APPDATA%/GHLG,
+/// Linux ~/.local/share/ghlg.
+pub fn app_data_root() -> Result<PathBuf, String> {
+    let base = dirs::data_dir().ok_or("Cannot resolve OS app-data directory")?;
+    let name = if cfg!(target_os = "linux") { "ghlg" } else { "GHLG" };
+    Ok(base.join(name))
+}
+
+fn project_root(project: &str) -> Result<PathBuf, String> {
+    Ok(app_data_root()?.join(project))
+}
+
+/// Project name = final component of the watched folder path.
+pub fn project_name(watched: &Path) -> Result<String, String> {
+    watched
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .ok_or_else(|| "Watched folder has no name".into())
+}
+
+fn is_date_dir(name: &str) -> bool {
+    name.len() == 10 && chrono::NaiveDate::parse_from_str(name, "%Y-%m-%d").is_ok()
+}
+
+/// All dates that have at least one session, newest first.
+/// This backs the full archive browser — any past date, not just today.
+pub fn list_dates(project: &str) -> Result<Vec<String>, String> {
+    let root = project_root(project)?;
+    if !root.is_dir() {
+        return Ok(vec![]);
+    }
+    let mut dates: Vec<String> = fs::read_dir(&root)
+        .map_err(|e| e.to_string())?
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().is_dir())
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .filter(|n| is_date_dir(n))
+        .collect();
+    dates.sort();
+    dates.reverse();
+    Ok(dates)
+}
+
+pub fn list_sessions(project: &str, date: &str) -> Result<Vec<SessionMeta>, String> {
+    let dir = project_root(project)?.join(date);
+    if !dir.is_dir() {
+        return Ok(vec![]);
+    }
+    let mut sessions: Vec<SessionMeta> = fs::read_dir(&dir)
+        .map_err(|e| e.to_string())?
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().is_dir())
+        .filter_map(|e| {
+            let id = e.file_name().to_string_lossy().to_string();
+            if !id.starts_with("session-") {
+                return None;
+            }
+            let entry_count = fs::read_dir(e.path())
+                .map(|rd| {
+                    rd.filter_map(|f| f.ok())
+                        .filter(|f| {
+                            f.file_name().to_string_lossy().starts_with("entry-")
+                                && f.path().extension().is_some_and(|x| x == "md")
+                        })
+                        .count()
+                })
+                .unwrap_or(0);
+            Some(SessionMeta { date: date.to_string(), session_id: id, entry_count })
+        })
+        .collect();
+    sessions.sort_by(|a, b| a.session_id.cmp(&b.session_id));
+    Ok(sessions)
+}
+
+/// Create (or reuse) today's next session folder. Called when watching
+/// starts; entries within one watch period share a session.
+pub fn create_session(project: &str) -> Result<(String, String), String> {
+    let date = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let dir = project_root(project)?.join(&date);
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let next = list_sessions(project, &date)?
+        .iter()
+        .filter_map(|s| s.session_id.strip_prefix("session-")?.parse::<u32>().ok())
+        .max()
+        .unwrap_or(0)
+        + 1;
+    let session_id = format!("session-{next:02}");
+    fs::create_dir_all(dir.join(&session_id)).map_err(|e| e.to_string())?;
+    Ok((date, session_id))
+}
+
+fn session_dir(project: &str, date: &str, session_id: &str) -> Result<PathBuf, String> {
+    // Reject path-traversal shaped inputs from the frontend.
+    if !is_date_dir(date) || !session_id.starts_with("session-") || session_id.contains(['/', '\\'])
+    {
+        return Err("Invalid date or session id".into());
+    }
+    Ok(project_root(project)?.join(date).join(session_id))
+}
+
+pub fn write_entry(
+    project: &str,
+    date: &str,
+    session_id: &str,
+    tag: &str,
+    title: &str,
+    summary: &str,
+) -> Result<SessionEntry, String> {
+    let dir = session_dir(project, date, session_id)?;
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let next = read_session(project, date, session_id)?
+        .iter()
+        .filter_map(|e| e.id.split('-').nth(1)?.parse::<u32>().ok())
+        .max()
+        .unwrap_or(0)
+        + 1;
+    let id = format!("entry-{next:03}-{tag}");
+    let timestamp = chrono::Local::now().to_rfc3339();
+    let path = dir.join(format!("{id}.md"));
+    let content = format!(
+        "---\nid: {id}\ntimestamp: {timestamp}\ntag: {tag}\ntitle: {title}\n---\n\n{summary}\n"
+    );
+    fs::write(&path, content).map_err(|e| e.to_string())?;
+    Ok(SessionEntry {
+        id,
+        timestamp,
+        tag: tag.to_string(),
+        title: title.to_string(),
+        summary: summary.to_string(),
+        screenshot_path: None,
+        markdown_path: path.display().to_string(),
+    })
+}
+
+pub fn read_session(
+    project: &str,
+    date: &str,
+    session_id: &str,
+) -> Result<Vec<SessionEntry>, String> {
+    let dir = session_dir(project, date, session_id)?;
+    if !dir.is_dir() {
+        return Ok(vec![]);
+    }
+    let mut entries: Vec<SessionEntry> = fs::read_dir(&dir)
+        .map_err(|e| e.to_string())?
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            e.file_name().to_string_lossy().starts_with("entry-")
+                && e.path().extension().is_some_and(|x| x == "md")
+        })
+        .filter_map(|e| parse_entry(&e.path()).ok())
+        .collect();
+    entries.sort_by(|a, b| a.id.cmp(&b.id));
+    // Attach screenshots referenced by front-matter or matching by number.
+    Ok(entries)
+}
+
+fn parse_entry(path: &Path) -> Result<SessionEntry, String> {
+    let raw = fs::read_to_string(path).map_err(|e| e.to_string())?;
+    let mut id = String::new();
+    let mut timestamp = String::new();
+    let mut tag = String::new();
+    let mut title = String::new();
+    let mut screenshot: Option<String> = None;
+    let mut body = String::new();
+
+    let mut in_front = false;
+    let mut front_done = false;
+    for line in raw.lines() {
+        if line.trim() == "---" {
+            if !in_front && !front_done {
+                in_front = true;
+            } else if in_front {
+                in_front = false;
+                front_done = true;
+            }
+            continue;
+        }
+        if in_front {
+            if let Some((k, v)) = line.split_once(':') {
+                let v = v.trim();
+                match k.trim() {
+                    "id" => id = v.into(),
+                    "timestamp" => timestamp = v.into(),
+                    "tag" => tag = v.into(),
+                    "title" => title = v.into(),
+                    "screenshot" => screenshot = Some(v.into()),
+                    _ => {}
+                }
+            }
+        } else if front_done {
+            body.push_str(line);
+            body.push('\n');
+        }
+    }
+    if id.is_empty() {
+        id = path
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default();
+    }
+    let screenshot_path =
+        screenshot.map(|s| path.parent().unwrap_or(Path::new("")).join(s).display().to_string());
+    Ok(SessionEntry {
+        id,
+        timestamp,
+        tag,
+        title,
+        summary: body.trim().to_string(),
+        screenshot_path,
+        markdown_path: path.display().to_string(),
+    })
+}
+
+/// Overwrite an entry's editable fields (tag, title, summary).
+pub fn update_entry(
+    project: &str,
+    date: &str,
+    session_id: &str,
+    entry_id: &str,
+    tag: &str,
+    title: &str,
+    summary: &str,
+) -> Result<(), String> {
+    let existing = find_entry(project, date, session_id, entry_id)?;
+    let content = format!(
+        "---\nid: {entry_id}\ntimestamp: {}\ntag: {tag}\ntitle: {title}\n---\n\n{summary}\n",
+        existing.timestamp
+    );
+    fs::write(&existing.markdown_path, content).map_err(|e| e.to_string())
+}
+
+pub fn delete_entry(
+    project: &str,
+    date: &str,
+    session_id: &str,
+    entry_id: &str,
+) -> Result<(), String> {
+    let existing = find_entry(project, date, session_id, entry_id)?;
+    fs::remove_file(&existing.markdown_path).map_err(|e| e.to_string())?;
+    if let Some(shot) = existing.screenshot_path {
+        let _ = fs::remove_file(shot); // screenshot may already be gone
+    }
+    Ok(())
+}
+
+fn find_entry(
+    project: &str,
+    date: &str,
+    session_id: &str,
+    entry_id: &str,
+) -> Result<SessionEntry, String> {
+    read_session(project, date, session_id)?
+        .into_iter()
+        .find(|e| e.id == entry_id)
+        .ok_or_else(|| format!("Entry not found: {entry_id}"))
+}

@@ -31,6 +31,9 @@ pub struct AppState {
     pub watch_state: Mutex<WatchStateHolder>,
     pub watched_path: Mutex<Option<PathBuf>>,
     pub last_event: Mutex<Option<LastEvent>>,
+    /// (date, session-id) entries are currently written into.
+    /// Created when watching starts or on first capture.
+    pub current_session: Mutex<Option<(String, String)>>,
 }
 
 pub struct WatchStateHolder {
