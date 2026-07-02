@@ -1,15 +1,28 @@
 #!/usr/bin/env bash
-# Open-core guardrail: block commits containing pro-tier keywords in the staged diff.
+# Open-core guardrail: block commits that contain FUNCTIONAL pro-tier code
+# signals outside src/pro-stub/. Plain-English mentions of pro concepts in
+# docs/comments are fine — we match implementation-shaped identifiers only.
 set -euo pipefail
 
-KEYWORDS='license|multi-project|multiproject|dashboard|pro-tier|protier|paywall|upgrade to pro|ghlg-pro|ghostlog-pro'
+# Function/variable-name patterns that indicate working pro-tier logic,
+# not just a mention of the concept.
+KEYWORDS='validateLicense|checkLicense|licenseKey|license_key|verify_license|multiProjectStore|multi_project_store|isPro\(|proTierEnabled|pro_tier_enabled|dashboardServer|dashboard_server'
 
-# CLAUDE.md and this hook legitimately mention the keywords — exclude them.
-matches=$(git diff --cached -- . ':(exclude)CLAUDE.md' ':(exclude)hooks/pre-commit' | grep -inE "$KEYWORDS" || true)
+# src/pro-stub/ is the sanctioned home for non-functional pro placeholders;
+# LICENSE files and package manifests legitimately contain the word "license".
+matches=$(git diff --cached -- . \
+  ':(exclude)src/pro-stub/**' \
+  ':(exclude)LICENSE' \
+  ':(exclude)LICENSE.md' \
+  ':(exclude)package.json' \
+  ':(exclude)package-lock.json' \
+  ':(exclude)hooks/pre-commit' \
+  | grep -inE "$KEYWORDS" || true)
 
 if [ -n "$matches" ]; then
-  echo "COMMIT BLOCKED: pro-tier keywords found in staged diff." >&2
-  echo "These belong in the private GHLG-pro repo:" >&2
+  echo "COMMIT BLOCKED: staged diff outside src/pro-stub/ contains identifiers" >&2
+  echo "that look like working pro-tier logic. That belongs in the private" >&2
+  echo "GHLG-pro repo. Matches:" >&2
   echo "$matches" >&2
   exit 1
 fi
