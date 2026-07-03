@@ -22,6 +22,13 @@ export interface NativeCaptureMessage {
   type: "manual_capture";
   note?: string;
   source: "extension";
+  /**
+   * data:image/jpeg;base64 URL of the visible localhost tab, attached only
+   * to console-error captures (a snapshot of what the page looked like at
+   * the moment of the error). Native messaging caps extension->host
+   * messages far above what a jpeg-compressed viewport produces.
+   */
+  screenshot?: string;
 }
 
 export type ExtensionStatus = "connected" | "disconnected";

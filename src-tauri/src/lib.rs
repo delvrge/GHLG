@@ -63,8 +63,11 @@ pub fn run_native_host_cli() -> Result<(), String> {
 
         let msg: serde_json::Value = serde_json::from_slice(&msg_buf).map_err(|e| e.to_string())?;
         let note = msg.get("note").and_then(|v| v.as_str()).map(str::to_string);
+        // Present on browser-error captures: a data:image/...;base64 URL of
+        // the visible localhost tab at the moment of the error.
+        let screenshot = msg.get("screenshot").and_then(|v| v.as_str()).map(str::to_string);
 
-        let result = rt.block_on(storage::capture_from_native_host(note));
+        let result = rt.block_on(storage::capture_from_native_host(note, screenshot));
         let response = match result {
             Ok(()) => serde_json::json!({ "ok": true }),
             Err(e) => serde_json::json!({ "ok": false, "error": e }),

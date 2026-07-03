@@ -202,7 +202,14 @@ fn heuristic_extract(text: &str) -> Option<EntryDraft> {
     let body = body.trim().trim_matches('"');
     let summary = body
         .lines()
-        .map(|l| l.trim())
+        .map(|l| {
+            // Strip JSON-string delimiters that survive a near-miss reply,
+            // e.g. a model emitting each section as its own quoted string:
+            //   "**Fix:** what changed.",
+            let l = l.trim();
+            let l = l.strip_suffix("\",").unwrap_or(l);
+            if l.starts_with("\"**") { &l[1..] } else { l }
+        })
         .collect::<Vec<_>>()
         .join("\n")
         .trim()
@@ -237,6 +244,54 @@ fn fallback_with_error(note: &str, err: &str) -> EntryDraft {
         title: note.chars().take(60).collect(),
         summary: format!("Local model call failed ({err}); captured the note as-is."),
     }
+}
+
+/// Describes an error-event screenshot using the optional vision model
+/// (Settings > AI provider > vision endpoint) — a second, vision-capable
+/// endpoint, since small local text models are rarely multimodal. Sends the
+/// image as an OpenAI-style `image_url` content part, which llama-server
+/// accepts when running a multimodal model.
+///
+/// Returns None when no vision endpoint is configured or on ANY failure —
+/// the capture, and the screenshot file itself, never depend on this
+/// succeeding. Same anti-fabrication stance as summarize_capture: describe
+/// only what is visible, never invent.
+pub async fn describe_screenshot(image_b64: &str, mime: &str) -> Option<String> {
+    let cfg = crate::storage::load_ai_config();
+    if cfg.vision_endpoint.trim().is_empty() {
+        return None;
+    }
+
+    let system = "You describe screenshots of a developer's own web app, captured at the \
+                  moment a browser error occurred. Describe only what is actually visible: \
+                  visible error text, blank or broken regions, general UI state, layout \
+                  problems. NEVER invent content, error messages, or details that are not \
+                  visible in the image. Only quote text you can actually read in the image; \
+                  if the image contains no readable text, say that plainly — do not make \
+                  any up. Reply with 2-4 plain sentences, no preamble.";
+
+    let body = json!({
+        "model": cfg.vision_model,
+        "messages": [
+            { "role": "system", "content": system },
+            { "role": "user", "content": [
+                { "type": "text", "text": "What does this screenshot show?" },
+                { "type": "image_url",
+                  "image_url": { "url": format!("data:{mime};base64,{image_b64}") } },
+            ]},
+        ],
+        "temperature": 0.2,
+    });
+
+    let client = reqwest::Client::builder().timeout(Duration::from_secs(60)).build().ok()?;
+    let url = format!("{}/v1/chat/completions", cfg.vision_endpoint.trim_end_matches('/'));
+    let resp = client.post(url).json(&body).send().await.ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let parsed: ChatCompletionResponse = resp.json().await.ok()?;
+    let text = parsed.choices.into_iter().next()?.message.content.trim().to_string();
+    if text.is_empty() { None } else { Some(text) }
 }
 
 /// Compile a batch of entry markdown into a single document. Falls back to

@@ -29,11 +29,12 @@ function getPort(): chrome.runtime.Port {
   return port;
 }
 
-function sendCapture(request: CaptureRequest): void {
+function sendCapture(request: CaptureRequest, screenshot?: string): void {
   const message: NativeCaptureMessage = {
     type: "manual_capture",
     note: request.note,
     source: "extension",
+    screenshot,
   };
   try {
     getPort().postMessage(message);
@@ -42,9 +43,33 @@ function sendCapture(request: CaptureRequest): void {
   }
 }
 
-chrome.runtime.onMessage.addListener((request: CaptureRequest, _sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((request: CaptureRequest, sender, sendResponse) => {
   if (request.kind === "capture") {
-    sendCapture(request);
+    // Error captures include a snapshot of the page at the moment of the
+    // error. captureVisibleTab shoots the ACTIVE tab of the window, so only
+    // attempt it when the erroring tab is the one on screen — a screenshot
+    // of some unrelated foreground tab would be worse than none. Allowed
+    // without a user gesture because the manifest holds explicit host
+    // permissions for localhost, the only place this extension runs.
+    if (request.trigger === "console-error" && sender.tab?.active) {
+      chrome.tabs.captureVisibleTab(
+        sender.tab.windowId,
+        { format: "jpeg", quality: 60 },
+        (dataUrl) => {
+          if (chrome.runtime.lastError || !dataUrl) {
+            console.log(
+              "[GHLG] screenshot skipped:",
+              chrome.runtime.lastError?.message ?? "no image",
+            );
+            sendCapture(request);
+          } else {
+            sendCapture(request, dataUrl);
+          }
+        },
+      );
+    } else {
+      sendCapture(request);
+    }
     sendResponse({ ok: true });
   }
   return false;

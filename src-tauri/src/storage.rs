@@ -102,6 +102,15 @@ pub struct AiConfig {
     pub endpoint: String,
     /// e.g. "llama3.2" — model name as the endpoint expects it.
     pub model: String,
+    /// Optional second endpoint serving a vision-capable model, used only
+    /// to describe error-event screenshots. Empty means: skip screenshot
+    /// analysis entirely (the screenshot itself is still saved). Separate
+    /// from `endpoint` because small local text models are rarely
+    /// multimodal — most setups run two llama-server instances.
+    #[serde(default)]
+    pub vision_endpoint: String,
+    #[serde(default)]
+    pub vision_model: String,
 }
 
 pub fn load_ai_config() -> AiConfig {
@@ -254,6 +263,7 @@ pub fn write_entry(
     tag: &str,
     title: &str,
     summary: &str,
+    screenshot: Option<(&[u8], &str)>,
 ) -> Result<SessionEntry, String> {
     let dir = session_dir(project, date, session_id)?;
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -266,8 +276,23 @@ pub fn write_entry(
     let id = format!("entry-{next:03}-{tag}");
     let timestamp = chrono::Local::now().to_rfc3339();
     let path = dir.join(format!("{id}.md"));
+    // Screenshot (if any) sits next to the entry, numbered to match, and is
+    // referenced by a relative front-matter key — parse_entry resolves it
+    // back to an absolute path on read.
+    let screenshot_name = match screenshot {
+        Some((bytes, ext)) => {
+            let name = format!("screenshot-{next:03}.{ext}");
+            fs::write(dir.join(&name), bytes).map_err(|e| e.to_string())?;
+            Some(name)
+        }
+        None => None,
+    };
+    let screenshot_line = screenshot_name
+        .as_ref()
+        .map(|n| format!("screenshot: {n}\n"))
+        .unwrap_or_default();
     let content = format!(
-        "---\nid: {id}\ntimestamp: {timestamp}\ntag: {tag}\ntitle: {title}\n---\n\n{summary}\n"
+        "---\nid: {id}\ntimestamp: {timestamp}\ntag: {tag}\ntitle: {title}\n{screenshot_line}---\n\n{summary}\n"
     );
     fs::write(&path, content).map_err(|e| e.to_string())?;
     Ok(SessionEntry {
@@ -276,7 +301,7 @@ pub fn write_entry(
         tag: tag.to_string(),
         title: title.to_string(),
         summary: summary.to_string(),
-        screenshot_path: None,
+        screenshot_path: screenshot_name.map(|n| dir.join(n).display().to_string()),
         markdown_path: path.display().to_string(),
     })
 }
@@ -418,8 +443,14 @@ pub fn update_entry(
     summary: &str,
 ) -> Result<(), String> {
     let existing = find_entry(project, date, session_id, entry_id)?;
+    let screenshot_line = existing
+        .screenshot_path
+        .as_deref()
+        .and_then(|p| Path::new(p).file_name())
+        .map(|n| format!("screenshot: {}\n", n.to_string_lossy()))
+        .unwrap_or_default();
     let content = format!(
-        "---\nid: {entry_id}\ntimestamp: {}\ntag: {tag}\ntitle: {title}\n---\n\n{summary}\n",
+        "---\nid: {entry_id}\ntimestamp: {}\ntag: {tag}\ntitle: {title}\n{screenshot_line}---\n\n{summary}\n",
         existing.timestamp
     );
     fs::write(&existing.markdown_path, content).map_err(|e| e.to_string())
@@ -519,8 +550,30 @@ pub async fn capture_from_git_commit(repo: &Path) -> Result<(), String> {
 
     let draft = crate::ai::summarize_capture(&note, diff_context).await;
     let (date, session_id) = create_session(&project)?;
-    write_entry(&project, &date, &session_id, &draft.tag, &draft.title, &draft.summary)?;
+    write_entry(&project, &date, &session_id, &draft.tag, &draft.title, &draft.summary, None)?;
     Ok(())
+}
+
+/// Parses a `data:image/...;base64,...` URL (what the extension's
+/// captureVisibleTab produces) into (bytes, file extension, raw base64,
+/// mime type). Anything malformed or non-image is simply dropped — a bad
+/// screenshot must never block the capture itself.
+fn parse_image_data_url(url: &str) -> Option<(Vec<u8>, String, String, String)> {
+    let rest = url.strip_prefix("data:")?;
+    let (meta, b64) = rest.split_once(',')?;
+    let mime = meta.split(';').next()?;
+    if !meta.contains("base64") {
+        return None;
+    }
+    let ext = match mime {
+        "image/jpeg" => "jpg",
+        "image/png" => "png",
+        "image/webp" => "webp",
+        _ => return None,
+    };
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD.decode(b64).ok()?;
+    Some((bytes, ext.to_string(), b64.to_string(), mime.to_string()))
 }
 
 /// Entry point for `ghlg --ghlg-native-host`, launched by Chrome itself as a
@@ -528,16 +581,42 @@ pub async fn capture_from_git_commit(repo: &Path) -> Result<(), String> {
 /// main.rs for the protocol loop). No repo argument is available — Chrome
 /// only passes its own extension origin — so the watched folder comes from
 /// the same config.json the review window itself uses.
-pub async fn capture_from_native_host(note: Option<String>) -> Result<(), String> {
+///
+/// `screenshot_data_url` arrives on browser-error captures: the extension
+/// snapshots the visible localhost tab at the moment of the error. The
+/// image is stored next to the entry, and — if a vision model is configured
+/// (Settings > AI provider) — its description of the visible page state is
+/// appended to the entry.
+pub async fn capture_from_native_host(
+    note: Option<String>,
+    screenshot_data_url: Option<String>,
+) -> Result<(), String> {
     let repo = load_watched_folder().ok_or("No watched folder configured")?;
     let project = project_name(&repo)?;
     let diff = working_tree_diff(&repo);
     let note_text = note.unwrap_or_else(|| "browser capture".to_string());
     let diff_context = if diff.trim().is_empty() { None } else { Some(diff.as_str()) };
 
-    let draft = crate::ai::summarize_capture(&note_text, diff_context).await;
+    let screenshot = screenshot_data_url.as_deref().and_then(parse_image_data_url);
+
+    let mut draft = crate::ai::summarize_capture(&note_text, diff_context).await;
+    if let Some((_, _, b64, mime)) = &screenshot {
+        if let Some(desc) = crate::ai::describe_screenshot(b64, mime).await {
+            draft.summary.push_str("\n\n**Screen at capture:** ");
+            draft.summary.push_str(&desc);
+        }
+    }
+
     let (date, session_id) = create_session(&project)?;
-    write_entry(&project, &date, &session_id, &draft.tag, &draft.title, &draft.summary)?;
+    write_entry(
+        &project,
+        &date,
+        &session_id,
+        &draft.tag,
+        &draft.title,
+        &draft.summary,
+        screenshot.as_ref().map(|(bytes, ext, _, _)| (bytes.as_slice(), ext.as_str())),
+    )?;
     Ok(())
 }
 
@@ -690,7 +769,7 @@ pub async fn capture_from_shell_error(command: &str, exit_code: &str) -> Result<
 
     let draft = crate::ai::summarize_capture(&note, diff_context).await;
     let (date, session_id) = create_session(&project)?;
-    write_entry(&project, &date, &session_id, &draft.tag, &draft.title, &draft.summary)?;
+    write_entry(&project, &date, &session_id, &draft.tag, &draft.title, &draft.summary, None)?;
     Ok(())
 }
 
@@ -714,3 +793,4 @@ fn find_entry(
         .find(|e| e.id == entry_id)
         .ok_or_else(|| format!("Entry not found: {entry_id}"))
 }
+

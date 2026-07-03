@@ -59,6 +59,8 @@ export default function Settings({
 
   const [aiEndpoint, setAiEndpoint] = useState("");
   const [aiModel, setAiModel] = useState("");
+  const [aiVisionEndpoint, setAiVisionEndpoint] = useState("");
+  const [aiVisionModel, setAiVisionModel] = useState("");
   const [aiSaved, setAiSaved] = useState(false);
 
   const [outputFolder, setOutputFolder] = useState<string | null>(null);
@@ -70,9 +72,13 @@ export default function Settings({
     invoke<string>("get_extension_status").then((s) => setExtensionStatus(s as "connected" | "disconnected"));
     invoke<boolean>("is_native_host_installed").then(setNativeHostInstalled).catch(() => {});
     getVersion().then(setVersion);
-    invoke<{ endpoint: string; model: string }>("get_ai_config").then((cfg) => {
+    invoke<{ endpoint: string; model: string; visionEndpoint: string; visionModel: string }>(
+      "get_ai_config",
+    ).then((cfg) => {
       setAiEndpoint(cfg.endpoint);
       setAiModel(cfg.model);
+      setAiVisionEndpoint(cfg.visionEndpoint);
+      setAiVisionModel(cfg.visionModel);
     });
     invoke<string | null>("get_output_folder").then(setOutputFolder);
   }, []);
@@ -92,7 +98,12 @@ export default function Settings({
   async function saveAiConfig() {
     setError(null);
     try {
-      await invoke("set_ai_config", { endpoint: aiEndpoint.trim(), model: aiModel.trim() });
+      await invoke("set_ai_config", {
+        endpoint: aiEndpoint.trim(),
+        model: aiModel.trim(),
+        visionEndpoint: aiVisionEndpoint.trim(),
+        visionModel: aiVisionModel.trim(),
+      });
       setAiSaved(true);
       setTimeout(() => setAiSaved(false), 1500);
     } catch (e) {
@@ -237,6 +248,25 @@ export default function Settings({
             <input
               value={aiModel}
               onChange={(e) => setAiModel(e.target.value)}
+              placeholder="model label (optional)"
+              className="w-48 bg-ink border border-edge rounded-md px-3 py-2 text-sm font-mono placeholder:text-fg-faint focus:outline-none focus:border-accent"
+            />
+          </div>
+          <p className="text-xs text-fg-muted pt-1">
+            Vision model (optional) — a second, vision-capable endpoint used only to describe
+            the screenshot taken when a browser error is captured. Leave blank to skip
+            screenshot analysis; the screenshot itself is always saved.
+          </p>
+          <div className="grid grid-cols-[1fr_auto] gap-3">
+            <input
+              value={aiVisionEndpoint}
+              onChange={(e) => setAiVisionEndpoint(e.target.value)}
+              placeholder="http://localhost:8081"
+              className="bg-ink border border-edge rounded-md px-3 py-2 text-sm font-mono placeholder:text-fg-faint focus:outline-none focus:border-accent"
+            />
+            <input
+              value={aiVisionModel}
+              onChange={(e) => setAiVisionModel(e.target.value)}
               placeholder="model label (optional)"
               className="w-48 bg-ink border border-edge rounded-md px-3 py-2 text-sm font-mono placeholder:text-fg-faint focus:outline-none focus:border-accent"
             />

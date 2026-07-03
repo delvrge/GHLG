@@ -1397,6 +1397,7 @@ dependencies = [
 name = "ghlg"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "chrono",
  "dirs 5.0.1",
  "notify",

@@ -9,11 +9,12 @@
  * its own fallback logic.
  *
  * summarizeDiff/summarizeScreenshot below are still pure stubs: nothing in
- * the frontend calls them yet (manual capture and git-commit capture run
- * entirely in Rust via src-tauri/src/ai.rs, since the git-hook path has no
- * webview at all; screenshot capture doesn't exist until the browser
- * extension, step 7). They're kept here as the frontend swap point for
- * whenever a UI-driven flow needs its own diff/screenshot summary.
+ * the frontend calls them yet. Manual capture, git-commit capture, and
+ * error-event screenshot analysis (ai.rs::describe_screenshot, fed by the
+ * browser extension via the native-host path) all run entirely in Rust via
+ * src-tauri/src/ai.rs, since those paths have no webview at all. They're
+ * kept here as the frontend swap point for whenever a UI-driven flow needs
+ * its own diff/screenshot summary.
  */
 import { invoke } from "@tauri-apps/api/core";
 

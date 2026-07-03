@@ -102,8 +102,9 @@ pub async fn manual_capture(app: AppHandle, note: Option<String>) -> Result<stor
     let note_text = note.unwrap_or_else(|| "manual capture".to_string());
     let diff_context = if diff.trim().is_empty() { None } else { Some(diff.as_str()) };
     let draft = crate::ai::summarize_capture(&note_text, diff_context).await;
-    let entry =
-        storage::write_entry(&project, &date, &session_id, &draft.tag, &draft.title, &draft.summary)?;
+    let entry = storage::write_entry(
+        &project, &date, &session_id, &draft.tag, &draft.title, &draft.summary, None,
+    )?;
     watcher::record_event(&app, "manual", note_text);
     Ok(entry)
 }
@@ -252,8 +253,13 @@ pub fn get_ai_config() -> storage::AiConfig {
 }
 
 #[tauri::command]
-pub fn set_ai_config(endpoint: String, model: String) -> Result<(), String> {
-    storage::save_ai_config(&storage::AiConfig { endpoint, model })
+pub fn set_ai_config(
+    endpoint: String,
+    model: String,
+    vision_endpoint: String,
+    vision_model: String,
+) -> Result<(), String> {
+    storage::save_ai_config(&storage::AiConfig { endpoint, model, vision_endpoint, vision_model })
 }
 
 /// Backs ai-stub.ts's compileEntries — the UI-driven path always has a
