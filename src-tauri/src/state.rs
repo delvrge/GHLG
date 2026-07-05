@@ -1,11 +1,13 @@
-//! Shared app state: watch status, the single watched folder, last capture.
+//! Shared app state: watch status, the watched folders, last capture.
 //!
-//! Free tier watches exactly ONE folder. The path is held here and every
-//! watcher/capture operation validates against it — path scoping is enforced
-//! in Rust, never trusted to the UI.
+//! Ghostlog watches one or more project folders (each the root of a git
+//! repository). The paths are held here and every watcher/capture operation
+//! validates against them — path scoping is enforced in Rust, never trusted
+//! to the UI.
 
 use notify::RecommendedWatcher;
 use serde::Serialize;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
@@ -24,26 +26,28 @@ pub struct LastEvent {
     pub kind: String,
     /// Human-readable one-liner shown in the review window home view.
     pub detail: String,
+    /// Which watched project the event belongs to.
+    pub project: String,
 }
 
 #[derive(Default)]
 pub struct AppState {
     pub watch_state: Mutex<WatchStateHolder>,
-    pub watched_path: Mutex<Option<PathBuf>>,
+    pub watched_paths: Mutex<Vec<PathBuf>>,
     pub last_event: Mutex<Option<LastEvent>>,
-    /// (date, session-id) entries are currently written into.
+    /// Per-project (date, session-id) currently written into.
     /// Created when watching starts or on first capture.
-    pub current_session: Mutex<Option<(String, String)>>,
+    pub current_sessions: Mutex<HashMap<String, (String, String)>>,
 }
 
 pub struct WatchStateHolder {
     pub state: WatchState,
-    /// Dropping the watcher stops it; kept here so Stop Watching works.
-    pub watcher: Option<RecommendedWatcher>,
+    /// One watcher per watched folder; dropping them stops watching.
+    pub watchers: Vec<RecommendedWatcher>,
 }
 
 impl Default for WatchStateHolder {
     fn default() -> Self {
-        Self { state: WatchState::Idle, watcher: None }
+        Self { state: WatchState::Idle, watchers: Vec::new() }
     }
 }

@@ -2,7 +2,7 @@
  * watcher.ts — frontend bridge to the Rust file/git watcher.
  *
  * The watcher itself runs in the Tauri backend (src-tauri) and is scoped to
- * the single user-selected project folder — enforced in Rust, not here.
+ * the user-selected project folders — enforced in Rust, not here.
  * Implemented in delivery step 2.
  */
 import { invoke } from "@tauri-apps/api/core";
@@ -22,6 +22,23 @@ export async function getWatchState(): Promise<WatchState> {
 }
 
 /** Manual "Log this now" trigger — captures recent git diff/log as an entry. */
-export async function triggerManualCapture(note?: string): Promise<void> {
-  await invoke("manual_capture", { note: note ?? null });
+export async function triggerManualCapture(project: string, note?: string): Promise<void> {
+  await invoke("manual_capture", { project, note: note ?? null });
+}
+
+export interface WatchedProject {
+  name: string;
+  path: string;
+}
+
+export async function getWatchedFolders(): Promise<WatchedProject[]> {
+  return invoke("get_watched_folders");
+}
+
+export async function addWatchedFolder(path: string): Promise<void> {
+  await invoke("add_watched_folder", { path });
+}
+
+export async function removeWatchedFolder(path: string): Promise<void> {
+  await invoke("remove_watched_folder", { path });
 }

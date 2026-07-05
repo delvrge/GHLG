@@ -27,10 +27,13 @@ pub fn get_last_event(state: State<AppState>) -> Option<LastEvent> {
     state.last_event.lock().unwrap().clone()
 }
 
-/// Set the single watched folder (free tier = exactly one).
-/// Validated here in Rust: must exist and be a directory.
+/// Add a watched project folder. Validated here in Rust: must exist, be a
+/// directory, and be the ROOT of a git repository. The git-root rule rejects
+/// both umbrella folders (a parent holding many projects has no .git) and
+/// subfolders inside a project (their repo root is above them) — each
+/// watched entry is exactly one project.
 #[tauri::command]
-pub fn set_watched_folder(app: AppHandle, path: String) -> Result<(), String> {
+pub fn add_watched_folder(app: AppHandle, path: String) -> Result<(), String> {
     let p = PathBuf::from(&path);
     let canonical = p
         .canonicalize()
@@ -38,33 +41,94 @@ pub fn set_watched_folder(app: AppHandle, path: String) -> Result<(), String> {
     if !canonical.is_dir() {
         return Err("Selected path is not a directory".into());
     }
-
-    // Free tier watches exactly ONE project, enforced structurally:
-    // the folder must be the ROOT of a git repository. This rejects both
-    // umbrella folders (a parent holding many projects has no .git) and
-    // subfolders inside a project (their repo root is above them).
     if !canonical.join(".git").exists() {
         return Err(
-            "This folder is not a git project. Ghostlog (free) watches a single \
-             project — select the root folder of one repository. Watching \
-             multiple projects at once is a Ghostlog Pro feature."
+            "This folder is not a git project. Ghostlog watches project \
+             repositories — select the root folder of one repository \
+             (you can add more than one)."
                 .into(),
         );
     }
+
     let state = app.state::<AppState>();
-    *state.watched_path.lock().unwrap() = Some(canonical.clone());
-    storage::save_config(&canonical)?;
+    let snapshot = {
+        let mut paths = state.watched_paths.lock().unwrap();
+        if paths.contains(&canonical) {
+            return Err("That folder is already being watched.".into());
+        }
+        // Two watched projects with the same folder name would share a
+        // session archive — sessions are keyed by project name on disk.
+        let name = storage::project_name(&canonical)?;
+        for existing in paths.iter() {
+            if storage::project_name(existing)? == name {
+                return Err(format!(
+                    "A watched project named \"{name}\" already exists. \
+                     Rename one of the folders to keep their archives separate."
+                ));
+            }
+        }
+        paths.push(canonical);
+        paths.clone()
+    };
+    storage::save_config(&snapshot)?;
+
+    // If we're mid-watch, pick the new folder up immediately.
+    if state.watch_state.lock().unwrap().state == WatchState::Watching {
+        watcher::restart(&app)?;
+    }
     Ok(())
 }
 
 #[tauri::command]
-pub fn get_watched_folder(state: State<AppState>) -> Option<String> {
+pub fn remove_watched_folder(app: AppHandle, path: String) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let snapshot = {
+        let mut paths = state.watched_paths.lock().unwrap();
+        paths.retain(|p| p.display().to_string() != path);
+        paths.clone()
+    };
+    storage::save_config(&snapshot)?;
+    if state.watch_state.lock().unwrap().state == WatchState::Watching {
+        if snapshot.is_empty() {
+            watcher::stop(&app);
+        } else {
+            watcher::restart(&app)?;
+        }
+    }
+    Ok(())
+}
+
+#[derive(serde::Serialize)]
+pub struct WatchedProject {
+    pub name: String,
+    pub path: String,
+}
+
+#[tauri::command]
+pub fn get_watched_folders(state: State<AppState>) -> Result<Vec<WatchedProject>, String> {
     state
-        .watched_path
+        .watched_paths
         .lock()
         .unwrap()
-        .as_ref()
-        .map(|p| p.display().to_string())
+        .iter()
+        .map(|p| {
+            Ok(WatchedProject {
+                name: storage::project_name(p)?,
+                path: p.display().to_string(),
+            })
+        })
+        .collect()
+}
+
+/// Resolve a project name to its watched repo path.
+fn repo_for_project(state: &State<AppState>, project: &str) -> Result<PathBuf, String> {
+    let paths = state.watched_paths.lock().unwrap();
+    for p in paths.iter() {
+        if storage::project_name(p)? == project {
+            return Ok(p.clone());
+        }
+    }
+    Err(format!("\"{project}\" is not a watched project"))
 }
 
 /// Manual "Log this now" trigger — writes a real entry file into the
@@ -76,24 +140,24 @@ pub fn get_watched_folder(state: State<AppState>) -> Option<String> {
 /// provider, via ai.rs; if none is configured (or the call fails), a
 /// clearly-labeled mock draft is used instead — capture always succeeds.
 #[tauri::command]
-pub async fn manual_capture(app: AppHandle, note: Option<String>) -> Result<storage::SessionEntry, String> {
+pub async fn manual_capture(
+    app: AppHandle,
+    project: String,
+    note: Option<String>,
+) -> Result<storage::SessionEntry, String> {
     let state = app.state::<AppState>();
-    let (project, repo) = {
-        let watched = state.watched_path.lock().unwrap();
-        let root = watched.as_ref().ok_or("No watched folder configured")?;
-        (storage::project_name(root)?, root.clone())
-    };
+    let repo = repo_for_project(&state, &project)?;
     let diff = storage::working_tree_diff(&repo);
 
-    // Reuse the active session or lazily create one (manual capture must
-    // work even when not actively watching).
+    // Reuse the project's active session or lazily create one (manual
+    // capture must work even when not actively watching).
     let (date, session_id) = {
-        let mut cur = state.current_session.lock().unwrap();
-        match cur.clone() {
+        let mut cur = state.current_sessions.lock().unwrap();
+        match cur.get(&project).cloned() {
             Some(s) => s,
             None => {
                 let s = storage::create_session(&project)?;
-                *cur = Some(s.clone());
+                cur.insert(project.clone(), s.clone());
                 s
             }
         }
@@ -105,35 +169,29 @@ pub async fn manual_capture(app: AppHandle, note: Option<String>) -> Result<stor
     let entry = storage::write_entry(
         &project, &date, &session_id, &draft.tag, &draft.title, &draft.summary, None,
     )?;
-    watcher::record_event(&app, "manual", note_text);
+    watcher::record_event(&app, "manual", note_text, &project);
     Ok(entry)
 }
 
 // ---- Session archive (read/browse any past date) ----
 
-fn current_project(state: &State<AppState>) -> Result<String, String> {
-    let watched = state.watched_path.lock().unwrap();
-    let root = watched.as_ref().ok_or("No watched folder configured")?;
-    storage::project_name(root)
+#[tauri::command]
+pub fn list_session_dates(project: String) -> Result<Vec<String>, String> {
+    storage::list_dates(&project)
 }
 
 #[tauri::command]
-pub fn list_session_dates(state: State<AppState>) -> Result<Vec<String>, String> {
-    storage::list_dates(&current_project(&state)?)
-}
-
-#[tauri::command]
-pub fn list_sessions(state: State<AppState>, date: String) -> Result<Vec<storage::SessionMeta>, String> {
-    storage::list_sessions(&current_project(&state)?, &date)
+pub fn list_sessions(project: String, date: String) -> Result<Vec<storage::SessionMeta>, String> {
+    storage::list_sessions(&project, &date)
 }
 
 #[tauri::command]
 pub fn read_session(
-    state: State<AppState>,
+    project: String,
     date: String,
     session_id: String,
 ) -> Result<Vec<storage::SessionEntry>, String> {
-    storage::read_session(&current_project(&state)?, &date, &session_id)
+    storage::read_session(&project, &date, &session_id)
 }
 
 /// Full-text search across every entry of the watched project — backs the
@@ -141,15 +199,15 @@ pub fn read_session(
 /// require remembering which date it happened on.
 #[tauri::command]
 pub fn search_entries(
-    state: State<AppState>,
+    project: String,
     query: String,
 ) -> Result<Vec<storage::SearchHit>, String> {
-    storage::search_entries(&current_project(&state)?, &query)
+    storage::search_entries(&project, &query)
 }
 
 #[tauri::command]
 pub fn update_entry(
-    state: State<AppState>,
+    project: String,
     date: String,
     session_id: String,
     entry_id: String,
@@ -157,55 +215,55 @@ pub fn update_entry(
     title: String,
     summary: String,
 ) -> Result<(), String> {
-    storage::update_entry(&current_project(&state)?, &date, &session_id, &entry_id, &tag, &title, &summary)
+    storage::update_entry(&project, &date, &session_id, &entry_id, &tag, &title, &summary)
 }
 
 #[tauri::command]
 pub fn delete_entry(
-    state: State<AppState>,
+    project: String,
     date: String,
     session_id: String,
     entry_id: String,
 ) -> Result<(), String> {
-    storage::delete_entry(&current_project(&state)?, &date, &session_id, &entry_id)
+    storage::delete_entry(&project, &date, &session_id, &entry_id)
 }
 
 /// Deletes an entire session (every entry + screenshot in it) — the
 /// Archive's per-session delete action.
 #[tauri::command]
 pub fn delete_session(
-    state: State<AppState>,
+    project: String,
     date: String,
     session_id: String,
 ) -> Result<(), String> {
-    storage::delete_session(&current_project(&state)?, &date, &session_id)
+    storage::delete_session(&project, &date, &session_id)
 }
 
 // ---- Settings: git-commit trigger ----
 
-fn watched_path(state: &State<AppState>) -> Result<std::path::PathBuf, String> {
-    state
-        .watched_path
-        .lock()
-        .unwrap()
-        .clone()
-        .ok_or_else(|| "No watched folder configured".to_string())
-}
-
+/// The commit trigger applies to every watched repo: enabled means the
+/// hook is installed in all of them.
 #[tauri::command]
 pub fn is_git_hook_enabled(state: State<AppState>) -> Result<bool, String> {
-    Ok(storage::is_git_hook_installed(&watched_path(&state)?))
+    let paths = state.watched_paths.lock().unwrap();
+    Ok(!paths.is_empty() && paths.iter().all(|p| storage::is_git_hook_installed(p)))
 }
 
 #[tauri::command]
 pub fn set_git_hook_enabled(state: State<AppState>, enabled: bool) -> Result<(), String> {
-    let repo = watched_path(&state)?;
-    if enabled {
-        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-        storage::install_git_hook(&repo, &exe)
-    } else {
-        storage::uninstall_git_hook(&repo)
+    let paths = state.watched_paths.lock().unwrap().clone();
+    if paths.is_empty() {
+        return Err("No watched folder configured".into());
     }
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    for repo in &paths {
+        if enabled {
+            storage::install_git_hook(repo, &exe)?;
+        } else {
+            storage::uninstall_git_hook(repo)?;
+        }
+    }
+    Ok(())
 }
 
 /// Extension connection status. Live handshake detection would need the

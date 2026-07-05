@@ -8,6 +8,7 @@ import { getVersion } from "@tauri-apps/api/app";
 import { open } from "@tauri-apps/plugin-dialog";
 import { isEnabled as autostartEnabled, enable as autostartEnable, disable as autostartDisable } from "@tauri-apps/plugin-autostart";
 import { applyTheme, getTheme, type Theme } from "../lib/theme";
+import { addWatchedFolder, removeWatchedFolder, type WatchedProject } from "../lib/watcher";
 
 function Toggle({ checked, onChange, disabled }: { checked: boolean; onChange: () => void; disabled?: boolean }) {
   return (
@@ -46,11 +47,11 @@ function Row({ title, description, children }: { title: string; description?: st
 }
 
 export default function Settings({
-  watchedFolder,
-  onChangeFolder,
+  folders,
+  onFoldersChanged,
 }: {
-  watchedFolder: string;
-  onChangeFolder: () => void;
+  folders: WatchedProject[];
+  onFoldersChanged: () => void;
 }) {
   const [manualTrigger, setManualTrigger] = useState(true);
   const [gitHook, setGitHook] = useState(false);
@@ -167,19 +168,60 @@ export default function Settings({
     }
   }
 
+  async function addFolder() {
+    setError(null);
+    const selection = await open({ directory: true, multiple: false, title: "Choose a project folder to watch" });
+    if (typeof selection !== "string") return;
+    try {
+      await addWatchedFolder(selection);
+      onFoldersChanged();
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
+  async function stopWatchingFolder(path: string) {
+    setError(null);
+    try {
+      await removeWatchedFolder(path);
+      onFoldersChanged();
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
   return (
     <div className="max-w-xl space-y-8">
       <section>
-        <h2 className="text-xs text-fg-faint uppercase tracking-wide mb-2">Watched folder</h2>
-        <div className="bg-panel border border-edge rounded-lg px-4 py-3 flex items-center justify-between gap-4">
-          <span className="font-mono text-sm break-all">{watchedFolder}</span>
-          <button
-            onClick={onChangeFolder}
-            className="shrink-0 text-xs text-fg-muted hover:text-fg border border-edge-strong hover:border-fg-muted px-3 py-1.5 rounded-md transition-colors"
-          >
-            Change
-          </button>
+        <h2 className="text-xs text-fg-faint uppercase tracking-wide mb-2">Watched projects</h2>
+        <div className="bg-panel border border-edge rounded-lg px-4 divide-y divide-edge">
+          {folders.map((f) => (
+            <div key={f.path} className="flex items-center justify-between gap-4 py-3">
+              <div className="min-w-0">
+                <p className="text-sm">{f.name}</p>
+                <p className="font-mono text-xs text-fg-faint break-all">{f.path}</p>
+              </div>
+              <button
+                onClick={() => stopWatchingFolder(f.path)}
+                className="shrink-0 text-xs text-fg-faint hover:text-accent hover:bg-accent/10 px-2 py-1 rounded-md transition-colors"
+              >
+                Remove
+              </button>
+            </div>
+          ))}
+          <div className="py-3">
+            <button
+              onClick={addFolder}
+              className="text-xs text-fg-muted hover:text-fg border border-edge-strong hover:border-fg-muted px-3 py-1.5 rounded-md transition-colors"
+            >
+              Add project…
+            </button>
+          </div>
         </div>
+        <p className="text-xs text-fg-faint mt-1.5">
+          Each entry must be the root folder of a git repository. Sessions are archived per
+          project; removing a project here stops watching it but keeps its archive.
+        </p>
       </section>
 
       <section>

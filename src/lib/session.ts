@@ -8,6 +8,19 @@
  */
 import { invoke } from "@tauri-apps/api/core";
 
+/**
+ * Active project — every archive call below is scoped to it. App.tsx sets
+ * this whenever the user switches projects; keeping it here means the
+ * archive screens don't each need a project prop threaded through.
+ */
+let activeProject = "";
+export function setActiveProject(project: string) {
+  activeProject = project;
+}
+export function getActiveProject(): string {
+  return activeProject;
+}
+
 export interface SessionEntry {
   id: string; // e.g. "entry-001-bugfix"
   timestamp: string; // ISO 8601
@@ -26,12 +39,12 @@ export interface SessionMeta {
 
 /** List all dates that have at least one session (full archive, any past date). */
 export async function listDates(): Promise<string[]> {
-  return invoke("list_session_dates");
+  return invoke("list_session_dates", { project: activeProject });
 }
 
 /** List sessions for a given date. */
 export async function listSessions(date: string): Promise<SessionMeta[]> {
-  return invoke("list_sessions", { date });
+  return invoke("list_sessions", { project: activeProject, date });
 }
 
 export interface SearchHit {
@@ -46,7 +59,7 @@ export interface SearchHit {
  * manageable page rather than the whole archive.
  */
 export async function searchEntries(query: string): Promise<SearchHit[]> {
-  return invoke("search_entries", { query });
+  return invoke("search_entries", { project: activeProject, query });
 }
 
 /** Read all entries in a session. */
@@ -54,7 +67,7 @@ export async function readSession(
   date: string,
   sessionId: string,
 ): Promise<SessionEntry[]> {
-  return invoke("read_session", { date, sessionId });
+  return invoke("read_session", { project: activeProject, date, sessionId });
 }
 
 /** Edit an entry's tag/title/summary in place. */
@@ -64,7 +77,7 @@ export async function updateEntry(
   entryId: string,
   fields: { tag: SessionEntry["tag"]; title: string; summary: string },
 ): Promise<void> {
-  await invoke("update_entry", { date, sessionId, entryId, ...fields });
+  await invoke("update_entry", { project: activeProject, date, sessionId, entryId, ...fields });
 }
 
 /** Delete an entry (and its screenshot, if any). */
@@ -73,10 +86,10 @@ export async function deleteEntry(
   sessionId: string,
   entryId: string,
 ): Promise<void> {
-  await invoke("delete_entry", { date, sessionId, entryId });
+  await invoke("delete_entry", { project: activeProject, date, sessionId, entryId });
 }
 
 /** Delete an entire session — every entry and screenshot in it. */
 export async function deleteSession(date: string, sessionId: string): Promise<void> {
-  await invoke("delete_session", { date, sessionId });
+  await invoke("delete_session", { project: activeProject, date, sessionId });
 }

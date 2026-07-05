@@ -1,7 +1,8 @@
 /**
- * First-run onboarding: pick the ONE watched folder (free tier), confirm the
- * exact path, then connect the browser extension.
- * The folder choice is validated and persisted on the Rust side.
+ * First-run onboarding: pick the first watched folder, confirm the exact
+ * path, then connect the browser extension. More projects can be added
+ * later in Settings. The folder choice is validated and persisted on the
+ * Rust side.
  */
 import { useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -26,7 +27,7 @@ export default function Onboarding({ onDone }: { onDone: () => void }) {
   async function confirmFolder() {
     if (!picked) return;
     try {
-      await invoke("set_watched_folder", { path: picked });
+      await invoke("add_watched_folder", { path: picked });
       setStep("extension");
     } catch (e) {
       setError(String(e));

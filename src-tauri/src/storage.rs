@@ -67,31 +67,57 @@ fn write_config(cfg: &serde_json::Value) -> Result<(), String> {
 
 pub fn load_config(app: &tauri::AppHandle) {
     use tauri::Manager;
-    let cfg = read_config();
-    if let Some(path) = cfg.get("watchedFolder").and_then(|v| v.as_str()) {
-        let p = PathBuf::from(path);
-        if p.is_dir() {
-            let state = app.state::<crate::state::AppState>();
-            *state.watched_path.lock().unwrap() = Some(p);
-        }
-    }
+    let state = app.state::<crate::state::AppState>();
+    *state.watched_paths.lock().unwrap() = load_watched_folders();
 }
 
-pub fn save_config(watched: &Path) -> Result<(), String> {
+pub fn save_config(watched: &[PathBuf]) -> Result<(), String> {
     let mut cfg = read_config();
-    cfg["watchedFolder"] = serde_json::json!(watched.display().to_string());
+    let list: Vec<String> = watched.iter().map(|p| p.display().to_string()).collect();
+    cfg["watchedFolders"] = serde_json::json!(list);
+    // Drop the legacy single-folder key so there is one source of truth.
+    if let Some(obj) = cfg.as_object_mut() {
+        obj.remove("watchedFolder");
+    }
     write_config(&cfg)
 }
 
-/// Reads the persisted watched folder directly from config.json — used by
-/// the native-host CLI subprocess (see below), which has no AppState/Tauri
-/// runtime to read it from.
-pub fn load_watched_folder() -> Option<PathBuf> {
-    read_config()
-        .get("watchedFolder")
-        .and_then(|v| v.as_str())
-        .map(PathBuf::from)
-        .filter(|p| p.is_dir())
+/// Reads the persisted watched folders directly from config.json — used by
+/// the CLI subprocesses (native host, shell hook), which have no
+/// AppState/Tauri runtime to read them from. Migrates the legacy
+/// single-folder `watchedFolder` key transparently.
+pub fn load_watched_folders() -> Vec<PathBuf> {
+    let cfg = read_config();
+    let mut out: Vec<PathBuf> = cfg
+        .get("watchedFolders")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str())
+                .map(PathBuf::from)
+                .collect()
+        })
+        .unwrap_or_default();
+    if out.is_empty() {
+        if let Some(p) = cfg.get("watchedFolder").and_then(|v| v.as_str()) {
+            out.push(PathBuf::from(p));
+        }
+    }
+    out.retain(|p| p.is_dir());
+    out
+}
+
+/// Best watched folder for a capture with no explicit repo: the one that
+/// contains `cwd` (shell-hook subprocesses inherit the failing command's
+/// working directory), else the first configured folder.
+pub fn folder_for_cwd() -> Option<PathBuf> {
+    let folders = load_watched_folders();
+    if let Ok(cwd) = std::env::current_dir() {
+        if let Some(hit) = folders.iter().find(|f| cwd.starts_with(f)) {
+            return Some(hit.clone());
+        }
+    }
+    folders.into_iter().next()
 }
 
 #[derive(Clone, Serialize, serde::Deserialize, Default)]
@@ -604,7 +630,7 @@ pub async fn capture_from_native_host(
     note: Option<String>,
     screenshot_data_url: Option<String>,
 ) -> Result<(), String> {
-    let repo = load_watched_folder().ok_or("No watched folder configured")?;
+    let repo = folder_for_cwd().ok_or("No watched folder configured")?;
     let project = project_name(&repo)?;
     let diff = working_tree_diff(&repo);
     let note_text = note.unwrap_or_else(|| "browser capture".to_string());
@@ -774,7 +800,7 @@ pub fn uninstall_shell_hook() -> Result<(), String> {
 /// `capture_from_native_host`: no repo argument available, so the watched
 /// folder comes from the persisted config.
 pub async fn capture_from_shell_error(command: &str, exit_code: &str) -> Result<(), String> {
-    let repo = load_watched_folder().ok_or("No watched folder configured")?;
+    let repo = folder_for_cwd().ok_or("No watched folder configured")?;
     let project = project_name(&repo)?;
     let diff = working_tree_diff(&repo);
     let note = format!("shell command failed (exit {exit_code}): {command}");
