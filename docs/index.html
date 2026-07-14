@@ -65,16 +65,21 @@
   .hero{position:relative}
   .why-local-first{position:relative}
   .decor{position:absolute; width:170px; pointer-events:none}
-  .decor-left{left:40px; top:260px; opacity:0; animation:ghost-drift 7s ease-in-out infinite}
+  .decor-left-outer{left:40px; top:260px; opacity:0; animation:ghost-drift-in 7s ease-in-out infinite}
+  .decor-left{width:100%; animation:ghost-bob 3.4s ease-in-out infinite}
   .decor-right{right:40px; top:60px; opacity:.92}
-  @media (max-width:1200px){ .decor{display:none} }
+  @media (max-width:1200px){ .decor, .decor-left-outer{display:none} }
 
-  @keyframes ghost-drift{
-    0%   { opacity:0;   transform:translateY(-320px); }
-    18%  { opacity:1;   transform:translateY(-60px); }
-    45%  { opacity:1;   transform:translateY(0); }
-    70%  { opacity:1;   transform:translateY(20px); }
-    100% { opacity:0;   transform:translateY(60px); }
+  @keyframes ghost-drift-in{
+    0%   { opacity:0;   transform:translateX(-420px); }
+    18%  { opacity:1;   transform:translateX(-70px); }
+    45%  { opacity:1;   transform:translateX(0); }
+    70%  { opacity:1;   transform:translateX(20px); }
+    100% { opacity:0;   transform:translateX(60px); }
+  }
+  @keyframes ghost-bob{
+    0%,100%{ transform:translateY(0); }
+    50%{ transform:translateY(-16px); }
   }
 
   .grid{grid-template-columns:repeat(2, 1fr); gap:28px}
@@ -92,7 +97,7 @@
 <body>
 
 <header class="hero">
-  <img class="decor decor-left" src="assets/red-ghost.png" alt="" />
+  <div class="decor decor-left-outer"><img class="decor-left" src="assets/red-ghost.png" alt="" /></div>
   <div class="wrap">
     <div class="brand"><span class="dot"></span><span>GHOSTLOG</span></div>
     <h1>A dev-notes tool that never phones home.</h1>
