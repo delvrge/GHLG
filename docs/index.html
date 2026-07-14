@@ -67,7 +67,9 @@
   .decor{position:absolute; width:170px; pointer-events:none}
   .decor-left-outer{left:40px; top:260px; opacity:0; animation:ghost-drift-in 41.6s linear infinite}
   .decor-left{width:100%; animation:ghost-bob 3.4s linear infinite}
-  .decor-right{right:40px; top:60px; opacity:.92}
+  .decor-right, .decor-right-bottom{right:40px; opacity:.92; animation:ghost-bob-mirrored 3.4s linear infinite}
+  .decor-right{top:60px}
+  .decor-right-bottom{top:660px}
   @media (max-width:1200px){ .decor, .decor-left-outer{display:none} }
 
   @keyframes ghost-drift-in{
@@ -84,6 +86,12 @@
     25%{ transform:translateY(-8px); }
     50%{ transform:translateY(-16px); }
     75%{ transform:translateY(-8px); }
+  }
+  @keyframes ghost-bob-mirrored{
+    0%,100%{ transform:scaleX(-1) translateY(0); }
+    25%{ transform:scaleX(-1) translateY(-8px); }
+    50%{ transform:scaleX(-1) translateY(-16px); }
+    75%{ transform:scaleX(-1) translateY(-8px); }
   }
 
   .grid{grid-template-columns:repeat(2, 1fr); gap:28px}
@@ -158,6 +166,7 @@
 
 <section class="why-local-first">
   <img class="decor decor-right" src="assets/red-ghost.png" alt="" />
+  <img class="decor decor-right-bottom" src="assets/red-ghost.png" alt="" />
   <div class="wrap">
     <h2>Why local-first</h2>
     <div class="grid">
