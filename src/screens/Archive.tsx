@@ -10,15 +10,21 @@ import {
   deleteSession,
   listDates,
   listSessions,
+  readSession,
   searchEntries,
   type SearchHit,
-  type SessionMeta,
+  type SessionEntry,
 } from "../lib/session";
 import TagBadge from "../components/TagBadge";
 
 const SEARCH_DEBOUNCE_MS = 250;
 /** How long a first click's "Confirm?" state stays armed before resetting. */
 const DELETE_CONFIRM_MS = 3000;
+
+interface DateEntry {
+  sessionId: string;
+  entry: SessionEntry;
+}
 
 export default function Archive({
   onOpenSession,
@@ -28,7 +34,11 @@ export default function Archive({
   const [dates, setDates] = useState<string[]>([]);
   const [filter, setFilter] = useState("");
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
-  const [sessions, setSessions] = useState<SessionMeta[]>([]);
+  // Sessions are an implementation detail (one gets created per app run,
+  // often holding just a single entry) — the archive shows entries flattened
+  // across every session of a date instead, so that fragmentation doesn't
+  // show up as visual clutter.
+  const [dateEntries, setDateEntries] = useState<DateEntry[]>([]);
   const [query, setQuery] = useState("");
   const [hits, setHits] = useState<SearchHit[]>([]);
   const [searching, setSearching] = useState(false);
@@ -42,8 +52,24 @@ export default function Archive({
     });
   }, []);
 
+  async function loadDateEntries(date: string) {
+    const sessions = await listSessions(date);
+    const perSession = await Promise.all(
+      sessions.map(async (s) => ({ s, entries: await readSession(date, s.sessionId) })),
+    );
+    // Empty sessions (aborted captures) are simply filtered out of the view
+    // here — left on disk untouched, just not shown, since deleting existing
+    // data isn't this view's call to make silently.
+    const flat = perSession
+      .filter((p) => p.entries.length > 0)
+      .flatMap((p) => p.entries.map((entry) => ({ sessionId: p.s.sessionId, entry })))
+      .sort((a, b) => b.entry.timestamp.localeCompare(a.entry.timestamp));
+    setDateEntries(flat);
+  }
+
   useEffect(() => {
-    if (selectedDate) listSessions(selectedDate).then(setSessions);
+    if (selectedDate) loadDateEntries(selectedDate);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedDate]);
 
   // Debounced content search — one backend walk per pause in typing, not
@@ -79,7 +105,7 @@ export default function Archive({
     }
     setConfirmingDelete(null);
     await deleteSession(date, sessionId);
-    setSessions(await listSessions(date));
+    loadDateEntries(date);
   }
 
   const visibleDates = dates.filter((d) => d.includes(filter));
@@ -153,34 +179,35 @@ export default function Archive({
           </div>
         ) : (
           <div className="space-y-2">
-            {selectedDate && sessions.length === 0 && (
+            {selectedDate && dateEntries.length === 0 && (
               <p className="text-sm text-fg-faint">
-                No sessions on {selectedDate}.
+                No entries on {selectedDate}.
               </p>
             )}
-            {sessions.map((s) => (
+            {dateEntries.map(({ sessionId, entry }) => (
               <div
-                key={s.sessionId}
+                key={entry.markdownPath}
                 className="w-full flex items-center justify-between bg-panel hover:bg-panel-raised border border-edge rounded-lg px-4 py-3 transition-colors gap-3"
               >
                 <button
-                  onClick={() => onOpenSession(s.date, s.sessionId)}
-                  className="flex-1 flex items-center justify-between text-left min-w-0"
+                  onClick={() => onOpenSession(selectedDate!, sessionId)}
+                  className="flex-1 flex items-center gap-3 text-left min-w-0"
                 >
-                  <span className="font-mono text-sm">{s.sessionId}</span>
-                  <span className="text-xs text-fg-muted mr-3">
-                    {s.entryCount} {s.entryCount === 1 ? "entry" : "entries"}
+                  <TagBadge tag={entry.tag} />
+                  <span className="text-sm font-medium truncate">{entry.title}</span>
+                  <span className="ml-auto shrink-0 font-mono text-xs text-fg-muted">
+                    {entry.timestamp.slice(11, 16)}
                   </span>
                 </button>
                 <button
-                  onClick={() => handleDeleteSession(s.date, s.sessionId)}
+                  onClick={() => handleDeleteSession(selectedDate!, sessionId)}
                   className={`shrink-0 text-xs px-2 py-1 rounded-md transition-colors ${
-                    confirmingDelete === s.sessionId
+                    confirmingDelete === sessionId
                       ? "bg-accent text-white"
                       : "text-fg-faint hover:text-accent hover:bg-accent/10"
                   }`}
                 >
-                  {confirmingDelete === s.sessionId ? "Confirm delete?" : "Delete"}
+                  {confirmingDelete === sessionId ? "Confirm delete?" : "Delete"}
                 </button>
               </div>
             ))}
